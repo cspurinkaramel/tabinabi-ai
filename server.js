@@ -60,5 +60,5 @@ app.post("/api/stamps",async(req,res)=>{
  try{const {data,error}=await db.from("visitor_stamps").upsert({visitor_id:visitorId,spot_id:spotId},{onConflict:"visitor_id,spot_id"}).select("visitor_id,spot_id,earned_at").single();if(error)throw error;res.json({saved:true,stamp:data,source:"database"})}
  catch(e){console.error(e.message);res.status(500).json({error:"保存できませんでした。データベース設定を確認してください。"})}
 });
-app.get("*",(_req,res)=>res.sendFile(path.join(dir,"public","index.html")));
+app.get("/{*splat}",(_req,res)=>res.sendFile(path.join(dir,"public","index.html")));
 const port=Number(process.env.PORT||3000);app.listen(port,()=>console.log(`旅ナビAI: http://localhost:${port}`));

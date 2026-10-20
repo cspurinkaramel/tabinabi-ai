@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>旅ナビAI</title>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; }
+    .card { border: 1px solid #ccc; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+    .stamp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+    .stamp-item { border: 2px dashed #bbb; padding: 10px; text-align: center; border-radius: 6px; }
+    .stamp-item.stamped { border-style: solid; border-color: #2e7d32; background-color: #e8f5e9; }
+    #preview { max-width: 100%; height: auto; display: none; margin-top: 10px; }
+  </style>
+</head>
+<body>
+
+  <h1>旅ナビAI 🐾</h1>
+
+  <div class="card">
+    <h2>1. 写真を撮影・選択</h2>
+    <input type="file" id="cameraInput" accept="image/*" capture="environment">
+    <img id="preview" alt="プレビュー">
+    <br><br>
+    <button id="identifyBtn" disabled>判定する</button>
+  </div>
+
+  <div class="card">
+    <h2>2. 判定結果</h2>
+    <div id="resultText">写真をアップロードしてください</div>
+    <button id="stampBtn" style="display:none; margin-top:10px;">スタンプを押す！</button>
+  </div>
+
+  <div class="card">
+    <h2>3. スタンプ帳 <span id="completionRate"></span></h2>
+    <div id="stampGrid" class="stamp-grid"></div>
+  </div>
+
+  <script>
+    // 訪問者IDの取得・生成（ブラウザのlocalStorageに保持）
+    let visitorId = localStorage.getItem('tabinavi_visitor_id');
+    if (!visitorId) {
+      visitorId = crypto.randomUUID();
+      localStorage.setItem('tabinavi_visitor_id', visitorId);
+    }
+
+    let currentImageDataUrl = null;
+    let detectedSpotId = null;
+    let allSpots = [];
+    let myStamps = [];
+
+    const cameraInput = document.getElementById('cameraInput');
+    const preview = document.getElementById('preview');
+    const identifyBtn = document.getElementById('identifyBtn');
+    const resultText = document.getElementById('resultText');
+    const stampBtn = document.getElementById('stampBtn');
+
+    // 初期データ読み込み
+    window.addEventListener('DOMContentLoaded', async () => {
+      await loadSpotsAndStamps();
+    });
+
+    // 1. 画像の選択・ブラウザ側での縮小処理
+    cameraInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          // 長辺を最大800pxに縮小
+          const MAX_SIZE = 800;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_SIZE) {
+              height *= MAX_SIZE / width;
+              width = MAX_SIZE;
+            }
+          } else {
+            if (height > MAX_SIZE) {
+              width *= MAX_SIZE / height;
+              height = MAX_SIZE;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+
+          // 圧縮したDataURLを取得
+          currentImageDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+          preview.src = currentImageDataUrl;
+          preview.style.display = 'block';
+          identifyBtn.disabled = false;
+        };
+        img.src = event.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // 2. AI画像判定 APIの呼び出し
+    identifyBtn.addEventListener('click', async () => {
+      if (!currentImageDataUrl) return;
+
+      resultText.innerText = 'AIが解析中...';
+      identifyBtn.disabled = true;
+      stampBtn.style.display = 'none';
+
+      try {
+        const res = await fetch('/api/identify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageDataUrl: currentImageDataUrl })
+        });
+        const data = await res.json();
+
+        if (data.candidateSpotId) {
+          detectedSpotId = data.candidateSpotId;
+          const spotInfo = allSpots.find(s => s.id === detectedSpotId);
+          const spotName = spotInfo ? spotInfo.name : detectedSpotId;
+          
+          resultText.innerText = `判定結果: ${spotName} （確信度: ${data.confidence}）\n${data.message || ''}`;
+          stampBtn.style.display = 'inline-block';
+        } else {
+          detectedSpotId = null;
+          resultText.innerText = `場所を特定できませんでした。\n${data.message || ''}`;
+        }
+      } catch (err) {
+        resultText.innerText = 'エラーが発生しました。';
+      } finally {
+        identifyBtn.disabled = false;
+      }
+    });
+
+    // 3. スタンプ保存 APIの呼び出し
+    stampBtn.addEventListener('click', async () => {
+      if (!detectedSpotId) return;
+
+      try {
+        const res = await fetch('/api/stamps', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ visitorId, spotId: detectedSpotId })
+        });
+
+        if (res.ok) {
+          alert('スタンプを獲得しました！');
+          stampBtn.style.display = 'none';
+          await loadSpotsAndStamps();
+        } else if (res.status === 409) {
+          alert('すでに獲得済みのスタンプです。');
+        } else {
+          alert('スタンプの保存に失敗しました。');
+        }
+      } catch (err) {
+        alert('通信エラーが発生しました。');
+      }
+    });
+
+    // スポット一覧と獲得済みスタンプの取得・描画
+    async function loadSpotsAndStamps() {
+      const [spotsRes, stampsRes] = await Promise.all([
+        fetch('/api/spots'),
+        fetch(`/api/stamps/${visitorId}`)
+      ]);
+
+      allSpots = await spotsRes.json();
+      myStamps = await stampsRes.json();
+
+      const stampedSpotIds = new Set(myStamps.map(s => s.spot_id));
+      const grid = document.getElementById('stampGrid');
+      grid.innerHTML = '';
+
+      allSpots.forEach(spot => {
+        const isStamped = stampedSpotIds.has(spot.id);
+        const item = document.createElement('div');
+        item.className = `stamp-item ${isStamped ? 'stamped' : ''}`;
+        item.innerHTML = `
+          <strong>${spot.name}</strong><br>
+          ${isStamped ? '済' : '未'}
+        `;
+        grid.appendChild(item);
+      });
+
+      // コンプリート率の表示
+      const rate = allSpots.length > 0 ? Math.round((stampedSpotIds.size / allSpots.length) * 100) : 0;
+      document.getElementById('completionRate').innerText = `(${stampedSpotIds.size}/${allSpots.length} - ${rate}%)`;
+    }
+  </script>
+</body>
+</html>
